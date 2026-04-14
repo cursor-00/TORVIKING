@@ -15,6 +15,10 @@ on:
         description: "Folder on VikingFile (optional)"
         required: false
         type: string
+      telegram_chat_id:
+        description: "Telegram chat ID (auto-filled by bot)"
+        required: false
+        type: string
 
 jobs:
   upload:
@@ -142,12 +146,13 @@ jobs:
           Write-Host "  📦 Downloaded: $($dlFiles.Count) file(s) | ${totalMB} MB"
           Write-Host ""
 
-      - name: 7. Upload files to VikingFile
+      - name: 7. Upload files to VikingFile + Send Telegram result
         shell: pwsh
         run: |
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $userHash = "${{ github.event.inputs.viking_user_hash }}"
           $folder   = "${{ github.event.inputs.viking_folder }}"
+          $chatId   = "${{ github.event.inputs.telegram_chat_id }}"
 
           Write-Host ""
           Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -164,50 +169,4 @@ jobs:
           Write-Host ""
 
           $currentFile = 0
-          $uploadedLinks = @()
-
-          foreach ($f in $files) {
-            $currentFile++
-            $sizeMB = [math]::Round($f.Length / 1MB, 2)
-            $pct    = [math]::Floor($currentFile / $totalFiles * 100)
-            $filled = [math]::Floor($pct / 5)
-            $empty  = 20 - $filled
-            $bar    = ([char]0x2588).ToString() * $filled + ([char]0x2500).ToString() * $empty
-
-            Write-Host "  [$bar] ${pct}% | File ${currentFile}/${totalFiles}"
-            Write-Host "  📄 $($f.Name) (${sizeMB} MB)"
-
-            $uploadArgs = @($f.FullName)
-            if ($userHash) { $uploadArgs += $userHash }
-            if ($folder)   { $uploadArgs += $folder }
-
-            $output = python upload.py @uploadArgs 2>&1 | Out-String
-
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "  ❌ Upload FAILED: $($f.Name)"
-              exit 1
-            }
-
-            if ($output -match '(https?://[^\s]+)') {
-              $link = $Matches[1]
-              $uploadedLinks += "  🔗 $($f.Name) → $link"
-              Write-Host "  🔗 $link"
-            }
-
-            Write-Host "  ✅ Uploaded"
-            Write-Host ""
-          }
-
-          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          Write-Host "  🎉 ALL UPLOADS COMPLETE!"
-          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-          if ($uploadedLinks.Count -gt 0) {
-            Write-Host ""
-            Write-Host "  📋 DOWNLOAD LINKS:"
-            foreach ($entry in $uploadedLinks) {
-              Write-Host $entry
-            }
-          }
-
-          Write-Host ""
+          $uploadedLinks = @
