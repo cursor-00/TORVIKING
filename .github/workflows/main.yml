@@ -21,82 +21,193 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Install aria2
+      - name: 1. Install aria2
         shell: pwsh
         run: |
-          Invoke-WebRequest "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile aria2.zip
-          Expand-Archive aria2.zip -Force
-          Move-Item aria2-* aria2
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "📦 Installing aria2..."
+          $aria2Url = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
+          Invoke-WebRequest -Uri $aria2Url -OutFile "aria2.zip"
+          Expand-Archive -Path "aria2.zip" -DestinationPath "." -Force
+          Move-Item -Path "aria2-1.37.0-win-64bit-build1" -Destination "aria2" -Force
+          Write-Host "✅ aria2 installed"
 
-      - name: Enable UTF-8
+      - name: 2. Ensure Python is available
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $ver = python --version 2>&1
+          Write-Host "🐍 $ver"
+
+      - name: 3. Force UTF-8 encoding (fix crash)
         shell: pwsh
         run: |
           echo "PYTHONIOENCODING=utf-8" >> $env:GITHUB_ENV
 
-      - name: Download and patch uploader
+      - name: 4. Download and Patch VikingFile uploader
         shell: pwsh
         run: |
-          Invoke-WebRequest "https://raw.githubusercontent.com/Hexdare/VikingFile-Upload/main/upload.py" -OutFile upload.py
-          
-          $content = Get-Content upload.py -Raw
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $ProgressPreference = 'SilentlyContinue'
+          Write-Host "🔧 Patching uploader..."
+          Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Hexdare/VikingFile-Upload/main/upload.py" -OutFile "upload.py"
 
-          $patch = "import sys`n" +
-                   "import time`n" +
+          $content = Get-Content "upload.py" -Raw
+
+          $patch = "# === GLOBAL PATCH ===`n" +
+                   "import sys`n" +
                    "sys.stdout.reconfigure(encoding='utf-8')`n" +
-                   "`n" +
-                   "def display_progress(uploaded, total, start_time):`n" +
-                   "    percent = (uploaded / total) * 100 if total else 0`n" +
-                   "    bar_len = 30`n" +
-                   "    filled = int(bar_len * uploaded // total) if total else 0`n" +
-                   "    bar = '█' * filled + '-' * (bar_len - filled)`n" +
-                   "    speed = uploaded / max((time.time() - start_time), 1)`n" +
-                   "    speed_mb = speed / 1024 / 1024`n" +
-                   "    uploaded_mb = uploaded / 1024 / 1024`n" +
-                   "    total_mb = total / 1024 / 1024`n" +
-                   "    line = f'[{bar}] {percent:5.1f}% | {uploaded_mb:.1f}/{total_mb:.1f} MB | {speed_mb:.2f} MB/s'`n" +
-                   "    print(f'\r{line}', end='', flush=True)`n"
+                   "import urllib.request`n" +
+                   "opener = urllib.request.build_opener()`n" +
+                   "opener.addheaders = [('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')]`n" +
+                   "urllib.request.install_opener(opener)`n"
 
           $content = $patch + "`n`n" + $content
-          $content | Set-Content upload.py -Encoding utf8
+          $content | Set-Content "upload.py" -Encoding utf8
+          Write-Host "✅ Uploader patched"
 
-      - name: Create downloads folder
+      - name: 5. Create downloads folder
         shell: pwsh
         run: |
-          mkdir downloads -Force | Out-Null
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          New-Item -Path "downloads" -ItemType Directory -Force | Out-Null
+          Write-Host "📂 Downloads folder ready"
 
-      - name: Download torrent (clean progress)
+      - name: 6. Download torrent with aria2
         shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $ErrorActionPreference = 'SilentlyContinue'
           $link = "${{ github.event.inputs.torrent_link }}"
 
-          .\aria2\aria2c.exe `
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          Write-Host "  📥 DOWNLOADING TORRENT"
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          Write-Host ""
+
+          $lastPct = -1
+
+          & .\aria2\aria2c.exe `
             --dir=downloads `
             --seed-time=0 `
-            --summary-interval=1 `
-            --console-log-level=warn `
-            --show-console-readout=true `
+            --max-upload-limit=0 `
+            --enable-dht=true `
+            --bt-enable-lpd=true `
+            --allow-overwrite=true `
             --file-allocation=none `
+            --console-log-level=notice `
             --max-connection-per-server=16 `
             --split=16 `
-            $link
+            --min-split-size=10M `
+            --summary-interval=5 `
+            --show-console-readout=false `
+            $link 2>&1 | ForEach-Object {
+              $line = "$_"
 
-      - name: Upload files (clean progress)
+              if ($line -match '\[#\w+\s+(\S+)/(\S+)\((\d+)%\).*?DL:(\S+)') {
+                $done  = $Matches[1]
+                $total = $Matches[2]
+                $pct   = [int]$Matches[3]
+                $speed = $Matches[4]
+
+                if ($pct -gt $lastPct) {
+                  $filled = [math]::Floor($pct / 5)
+                  $empty  = 20 - $filled
+                  $bar    = ([char]0x2588).ToString() * $filled + ([char]0x2500).ToString() * $empty
+                  Write-Host "  [$bar] ${pct}% | ${done} / ${total} | ${speed}/s"
+                  $lastPct = $pct
+                }
+              }
+              elseif ($line -match 'Download complete') {
+                Write-Host "  ✅ Download complete!"
+              }
+              elseif ($line -match 'Fetching metadata|Downloading \d+ item') {
+                Write-Host "  ⏳ Fetching metadata..."
+              }
+            }
+
+          $exitCode = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+
+          if ($exitCode -ne 0) {
+            Write-Host "  ❌ Download failed (exit code: $exitCode)"
+            exit 1
+          }
+
+          Write-Host ""
+          $dlFiles = Get-ChildItem "downloads" -Recurse -File | Where-Object { $_.Extension -ne ".aria2" }
+          $totalMB = [math]::Round(($dlFiles | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+          Write-Host "  📦 Downloaded: $($dlFiles.Count) file(s) | ${totalMB} MB"
+          Write-Host ""
+
+      - name: 7. Upload files to VikingFile
         shell: pwsh
         run: |
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $userHash = "${{ github.event.inputs.viking_user_hash }}"
           $folder   = "${{ github.event.inputs.viking_folder }}"
 
-          Get-ChildItem downloads -Recurse -File |
-            Where-Object { $_.Extension -ne ".aria2" } |
-            ForEach-Object {
+          Write-Host ""
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          Write-Host "  📤 UPLOADING TO VIKINGFILE"
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          Write-Host ""
 
-              Write-Host "`nUploading: $($_.Name)"
+          $files = Get-ChildItem "downloads" -Recurse -File |
+            Where-Object { $_.Extension -ne ".aria2" }
 
-              $args = @($_.FullName)
-              if ($userHash) { $args += $userHash }
-              if ($folder)   { $args += $folder }
+          $totalFiles  = $files.Count
+          $totalSizeMB = [math]::Round(($files | Measure-Object -Property Length -Sum).Sum / 1MB, 2)
+          Write-Host "  📁 Files: $totalFiles | Total: ${totalSizeMB} MB"
+          Write-Host ""
 
-              python upload.py @args
+          $currentFile = 0
+          $uploadedLinks = @()
 
-              Write-Host "`nDone"
+          foreach ($f in $files) {
+            $currentFile++
+            $sizeMB = [math]::Round($f.Length / 1MB, 2)
+            $pct    = [math]::Floor($currentFile / $totalFiles * 100)
+            $filled = [math]::Floor($pct / 5)
+            $empty  = 20 - $filled
+            $bar    = ([char]0x2588).ToString() * $filled + ([char]0x2500).ToString() * $empty
+
+            Write-Host "  [$bar] ${pct}% | File ${currentFile}/${totalFiles}"
+            Write-Host "  📄 $($f.Name) (${sizeMB} MB)"
+
+            $uploadArgs = @($f.FullName)
+            if ($userHash) { $uploadArgs += $userHash }
+            if ($folder)   { $uploadArgs += $folder }
+
+            $output = python upload.py @uploadArgs 2>&1 | Out-String
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "  ❌ Upload FAILED: $($f.Name)"
+              exit 1
             }
+
+            if ($output -match '(https?://[^\s]+)') {
+              $link = $Matches[1]
+              $uploadedLinks += "  🔗 $($f.Name) → $link"
+              Write-Host "  🔗 $link"
+            }
+
+            Write-Host "  ✅ Uploaded"
+            Write-Host ""
+          }
+
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          Write-Host "  🎉 ALL UPLOADS COMPLETE!"
+          Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+          if ($uploadedLinks.Count -gt 0) {
+            Write-Host ""
+            Write-Host "  📋 DOWNLOAD LINKS:"
+            foreach ($entry in $uploadedLinks) {
+              Write-Host $entry
+            }
+          }
+
+          Write-Host ""
