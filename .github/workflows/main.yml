@@ -21,57 +21,50 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: 1. Install aria2
+      - name: Install aria2
         shell: pwsh
         run: |
-          $url = "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip"
-          Invoke-WebRequest $url -OutFile aria2.zip
+          Invoke-WebRequest "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" -OutFile aria2.zip
           Expand-Archive aria2.zip -Force
           Move-Item aria2-* aria2
 
-      - name: 2. Enable UTF-8
+      - name: Enable UTF-8
         shell: pwsh
         run: |
           echo "PYTHONIOENCODING=utf-8" >> $env:GITHUB_ENV
 
-      - name: 3. Download & patch uploader (silent + clean)
+      - name: Download and patch uploader
         shell: pwsh
         run: |
           Invoke-WebRequest "https://raw.githubusercontent.com/Hexdare/VikingFile-Upload/main/upload.py" -OutFile upload.py
           
           $content = Get-Content upload.py -Raw
 
-          # Patch: UTF-8 + disable noisy progress
-          $patch = @"
-import sys
-sys.stdout.reconfigure(encoding='utf-8')
+          $patch = "import sys`n" +
+                   "import time`n" +
+                   "sys.stdout.reconfigure(encoding='utf-8')`n" +
+                   "`n" +
+                   "def display_progress(uploaded, total, start_time):`n" +
+                   "    percent = (uploaded / total) * 100 if total else 0`n" +
+                   "    bar_len = 30`n" +
+                   "    filled = int(bar_len * uploaded // total) if total else 0`n" +
+                   "    bar = '█' * filled + '-' * (bar_len - filled)`n" +
+                   "    speed = uploaded / max((time.time() - start_time), 1)`n" +
+                   "    speed_mb = speed / 1024 / 1024`n" +
+                   "    uploaded_mb = uploaded / 1024 / 1024`n" +
+                   "    total_mb = total / 1024 / 1024`n" +
+                   "    line = f'[{bar}] {percent:5.1f}% | {uploaded_mb:.1f}/{total_mb:.1f} MB | {speed_mb:.2f} MB/s'`n" +
+                   "    print(f'\r{line}', end='', flush=True)`n"
 
-# === CLEAN PROGRESS PATCH ===
-def display_progress(uploaded, total, start_time):
-    percent = (uploaded / total) * 100 if total else 0
-    bar_len = 30
-    filled = int(bar_len * uploaded // total) if total else 0
-    bar = '█' * filled + '-' * (bar_len - filled)
-
-    speed = uploaded / max((time.time() - start_time), 1)
-    speed_mb = speed / 1024 / 1024
-
-    uploaded_mb = uploaded / 1024 / 1024
-    total_mb = total / 1024 / 1024
-
-    line = f"[{bar}] {percent:5.1f}% | {uploaded_mb:.1f}/{total_mb:.1f} MB | {speed_mb:.2f} MB/s"
-    print(f"\r{line}", end="", flush=True)
-"@
-
-          $content = $patch + "`n" + $content
+          $content = $patch + "`n`n" + $content
           $content | Set-Content upload.py -Encoding utf8
 
-      - name: 4. Prepare folder
+      - name: Create downloads folder
         shell: pwsh
         run: |
           mkdir downloads -Force | Out-Null
 
-      - name: 5. Download (clean progress bar)
+      - name: Download torrent (clean progress)
         shell: pwsh
         run: |
           $link = "${{ github.event.inputs.torrent_link }}"
@@ -87,7 +80,7 @@ def display_progress(uploaded, total, start_time):
             --split=16 `
             $link
 
-      - name: 6. Upload (clean progress bar)
+      - name: Upload files (clean progress)
         shell: pwsh
         run: |
           $userHash = "${{ github.event.inputs.viking_user_hash }}"
@@ -105,5 +98,5 @@ def display_progress(uploaded, total, start_time):
 
               python upload.py @args
 
-              Write-Host "`nDone."
+              Write-Host "`nDone"
             }
